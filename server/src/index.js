@@ -24,41 +24,57 @@ inicializarSocket(servidor);
 async function iniciar() {
   try {
     // Loga as variáveis de ambiente críticas (sem expor valores sensíveis)
-    console.log('[GhostTalk] Iniciando...');
-    console.log('[GhostTalk] NODE_ENV:', process.env.NODE_ENV);
-    console.log('[GhostTalk] PORT:', process.env.PORT);
-    console.log('[GhostTalk] MONGODB_URI definida:', !!process.env.MONGODB_URI);
-    console.log('[GhostTalk] JWT_SECRET definida:', !!process.env.JWT_SECRET);
-
-    await conectarBancoDeDados();
-    logger.info('Conectado ao banco de dados com sucesso');
+    logger.info('Iniciando GhostTalk', {
+      NODE_ENV: process.env.NODE_ENV,
+      PORT: process.env.PORT,
+      MONGODB_URI_definida: !!process.env.MONGODB_URI,
+      JWT_SECRET_definida: !!process.env.JWT_SECRET,
+      JWT_REFRESH_SECRET_definida: !!process.env.JWT_REFRESH_SECRET,
+      CLIENT_URL_definida: !!process.env.CLIENT_URL,
+    });
 
     // Em produção escuta em 0.0.0.0 para aceitar conexões externas
     // Em desenvolvimento usa 127.0.0.1 por segurança
     const HOST = process.env.NODE_ENV === 'production' ? '0.0.0.0' : '127.0.0.1';
-    servidor.listen(PORTA, HOST, () => {
-      logger.info(`Servidor GhostTalk rodando na porta ${PORTA} em modo ${process.env.NODE_ENV}`);
-    });
+
+    // Abre a porta ANTES de conectar ao MongoDB: o Render detecta a porta aberta
+    // e o healthcheck (/api/health) responde mesmo se o banco demorar a conectar,
+    // evitando o ciclo "deploy falha -> reinicia -> cai".
+    await new Promise((resolve) => servidor.listen(PORTA, HOST, resolve));
+    logger.info(`Servidor GhostTalk rodando na porta ${PORTA} em modo ${process.env.NODE_ENV}`);
+
+    await conectarBancoDeDados();
+    logger.info('Conectado ao banco de dados com sucesso');
 
     // Inicia a limpeza periódica de mensagens com auto-destruição
     iniciarLimpezaMensagensExpiradas();
   } catch (erro) {
-    console.error('[GhostTalk] ERRO AO INICIAR:', erro.message);
-    console.error('[GhostTalk] Stack:', erro.stack);
-    logger.error('Falha ao iniciar o servidor:', erro.message);
+    logger.error('Falha ao iniciar o servidor:', erro.stack || erro.message);
+    // Sai só se a falha for na inicialização; o Render reinicia o serviço
     process.exit(1);
   }
 }
 
-// Tratamento de erros não capturados
+// ----------------------------------------------------------------
+// Rede de segurança: uma falha isolada (ex.: promise sem catch num handler
+// de socket) NÃO deve derrubar o servidor inteiro e desconectar todos os
+// usuários. O erro é registrado com a stack para que a causa seja corrigida.
+// ----------------------------------------------------------------
 process.on('unhandledRejection', (motivo) => {
-  logger.error('Rejeição não tratada:', motivo);
-  process.exit(1);
+  logger.error('Rejeição não tratada:', motivo instanceof Error ? motivo.stack : motivo);
 });
 
 process.on('uncaughtException', (erro) => {
-  logger.error('Exceção não capturada:', erro.message);
-  process.exit(1);
+  logger.error('Exceção não capturada:', erro.stack || erro.message);
 });
+
+// Encerramento limpo quando o Render envia SIGTERM (novo deploy / reinício)
+function encerrar(sinal) {
+  logger.info(`${sinal} recebido — encerrando servidor`);
+  servidor.close(() => process.exit(0));
+  setTimeout(() => process.exit(0), 10000).unref();
+}
+process.on('SIGTERM', () => encerrar('SIGTERM'));
+process.on('SIGINT', () => encerrar('SIGINT'));
 
 iniciar();

@@ -14,6 +14,7 @@ import PaginaPerfil from './pages/PaginaPerfil';
 import PaginaConfiguracoes from './pages/PaginaConfiguracoes';
 import PaginaConvite from './pages/PaginaConvite';
 import CarregandoTela from './components/CarregandoTela';
+import ErrorBoundary from './components/ErrorBoundary';
 
 /**
  * Rota protegida — redireciona para login se não autenticado.
@@ -70,12 +71,15 @@ export default function App() {
               {/* Sala de convite — acessível sem login */}
               <Route path="/convite/:codigo" element={<PaginaConvite />} />
 
-              {/* Rotas protegidas */}
+              {/* Rotas protegidas — o ErrorBoundary local isola falhas do chat
+                  sem derrubar o restante do app */}
               <Route
                 path="/chat"
                 element={
                   <RotaProtegida>
-                    <PaginaChat />
+                    <ErrorBoundary>
+                      <PaginaChat />
+                    </ErrorBoundary>
                   </RotaProtegida>
                 }
               />
@@ -83,7 +87,9 @@ export default function App() {
                 path="/chat/:conversaId"
                 element={
                   <RotaProtegida>
-                    <PaginaChat />
+                    <ErrorBoundary>
+                      <PaginaChat />
+                    </ErrorBoundary>
                   </RotaProtegida>
                 }
               />

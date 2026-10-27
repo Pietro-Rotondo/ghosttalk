@@ -6,12 +6,18 @@
 
 import { useEffect, useRef, useCallback } from 'react';
 import { io } from 'socket.io-client';
+import api from '../utils/api';
 import { useAuth } from '../context/AuthContext';
 import { useChat } from '../context/ChatContext';
 
 let socketInstance = null; // Instância compartilhada (singleton)
 
-export function useSocket() {
+/**
+ * @param {boolean} conectar - Apenas UM chamador (PaginaChat) deve gerenciar a conexão.
+ *   Os demais (ex.: AreaChat) passam `false` e só usam as funções de emissão.
+ *   Antes, cada AreaChat montado abria mais um socket e vazava conexões.
+ */
+export function useSocket(conectar = true) {
   const { usuario } = useAuth();
   const {
     adicionarMensagem,
@@ -25,6 +31,8 @@ export function useSocket() {
   // Conecta ao servidor quando o usuário está autenticado
   // ----------------------------------------------------------------
   useEffect(() => {
+    if (!conectar) return;
+
     if (!usuario) {
       // Desconecta se fez logout
       if (socketInstance) {
@@ -37,17 +45,27 @@ export function useSocket() {
     const token = localStorage.getItem('ghosttalk_access_token');
     if (!token) return;
 
+    // Evita sockets duplicados (StrictMode/re-render): fecha o anterior antes de criar outro
+    if (socketInstance) {
+      socketInstance.removeAllListeners();
+      socketInstance.disconnect();
+      socketInstance = null;
+    }
+
     // Em produção conecta direto no backend; em desenvolvimento usa mesma origem (proxy Vite)
     const socketUrl = import.meta.env.VITE_API_URL
       ? `https://${import.meta.env.VITE_API_URL}`
       : window.location.origin;
 
     // Cria a conexão Socket.IO com autenticação JWT
+    // `auth` como função: a cada (re)conexão envia o token ATUAL. Com um objeto fixo,
+    // depois de 15 min o token expira e toda reconexão falha com "Token inválido".
     socketInstance = io(socketUrl, {
-      auth: { token },
+      auth: (cb) => cb({ token: localStorage.getItem('ghosttalk_access_token') }),
       reconnection: true,
-      reconnectionAttempts: 5,
+      reconnectionAttempts: Infinity, // o Render hiberna/reinicia; nunca desiste
       reconnectionDelay: 1000,
+      reconnectionDelayMax: 10000,
       transports: ['websocket', 'polling'],
     });
 
@@ -61,8 +79,17 @@ export function useSocket() {
       console.info('[GhostTalk] Socket conectado:', socketInstance.id);
     });
 
-    socketInstance.on('connect_error', (erro) => {
+    socketInstance.on('connect_error', async (erro) => {
       console.error('[GhostTalk] Erro de conexão:', erro.message);
+      // Token expirado/inválido: renova via REST (o interceptor do axios faz o refresh)
+      // e o socket reconecta sozinho já com o token novo.
+      if (/token/i.test(erro.message)) {
+        try {
+          await api.get('/usuarios/perfil');
+        } catch {
+          /* se o refresh falhar, o interceptor redireciona para o login */
+        }
+      }
     });
 
     // Nova mensagem recebida
@@ -76,17 +103,10 @@ export function useSocket() {
     });
 
     // Mensagens marcadas como lidas por outro usuário
+    // (antes era despachado um `statusEntrega` como FUNÇÃO — o React então quebrava
+    // ao renderizar `statusEntrega.some(...)` e a tela ficava cinza)
     socketInstance.on('mensagensLidas', ({ conversaId, leitorId, lidoEm }) => {
-      despacharMensagens({
-        tipo: 'ATUALIZAR_MENSAGEM',
-        conversaId,
-        atualizacao: {
-          'statusEntrega': (anterior) =>
-            (anterior || []).map((s) =>
-              s.usuarioId === leitorId ? { ...s, lido: true, lidoEm } : s
-            ),
-        },
-      });
+      despacharMensagens({ tipo: 'MARCAR_LIDAS', conversaId, leitorId, lidoEm });
     });
 
     // Reação atualizada
@@ -109,7 +129,7 @@ export function useSocket() {
         socketInstance.off('reacaoAtualizada');
       }
     };
-  }, [usuario, adicionarMensagem, atualizarDigitando, despacharMensagens]);
+  }, [conectar, usuario, adicionarMensagem, atualizarDigitando, despacharMensagens]);
 
   // ----------------------------------------------------------------
   // Funções para emitir eventos ao servidor

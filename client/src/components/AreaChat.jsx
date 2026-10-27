@@ -24,7 +24,7 @@ import toast from 'react-hot-toast';
 export default function AreaChat({ conversa, onVoltar }) {
   const { usuario } = useAuth();
   const { mensagensPorConversa, carregarMensagens, digitandoPor, setConversas } = useChat();
-  const { enviarMensagem, emitirDigitando, marcarComoLidas } = useSocket();
+  const { enviarMensagem, emitirDigitando, marcarComoLidas } = useSocket(false);
 
   const mensagens = mensagensPorConversa[conversa._id] || [];
   const digitando = digitandoPor[conversa._id] || [];

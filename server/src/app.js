@@ -10,6 +10,8 @@ const morgan = require('morgan');
 const compression = require('compression');
 const path = require('path');
 const { rateLimiterGlobal } = require('./middleware/rateLimiter');
+const { verificarOrigem, origensConfiguradas } = require('./utils/origensPermitidas');
+const logger = require('./utils/logger');
 
 const rotasAuth = require('./routes/auth');
 const rotasUsuarios = require('./routes/usuarios');
@@ -18,6 +20,16 @@ const rotasGrupos = require('./routes/grupos');
 const rotasUpload = require('./routes/upload');
 
 const app = express();
+
+// Health check — registrado ANTES de CORS/rate limit para que o healthcheck
+// do Render nunca seja bloqueado (ele não envia header Origin).
+app.get('/api/health', (req, res) => {
+  res.json({
+    status: 'ok',
+    servico: 'GhostTalk API',
+    timestamp: new Date().toISOString(),
+  });
+});
 
 // ----------------------------------------------------------------
 // Segurança: headers HTTP com Helmet
@@ -30,7 +42,7 @@ app.use(
         scriptSrc: ["'self'"],
         styleSrc: ["'self'", "'unsafe-inline'"],
         imgSrc: ["'self'", 'data:', 'blob:'],
-        connectSrc: ["'self'", process.env.CLIENT_URL],
+        connectSrc: ["'self'", ...origensConfiguradas],
       },
     },
     hsts: {
@@ -42,37 +54,11 @@ app.use(
 );
 
 // ----------------------------------------------------------------
-// CORS — apenas origens autorizadas
+// CORS — apenas origens autorizadas (regra em utils/origensPermitidas.js)
 // ----------------------------------------------------------------
-// Origens permitidas: lista do .env + padrão trycloudflare (tunnels temporários)
-const origensPermitidas = (process.env.CLIENT_URL || 'http://localhost:5173')
-  .split(',')
-  .map((u) => u.trim());
-
 app.use(
   cors({
-    origin: (origem, callback) => {
-      // Sem origem: permite em desenvolvimento (Postman, curl, etc.)
-      if (!origem && process.env.NODE_ENV === 'development') {
-        return callback(null, true);
-      }
-      // Permite tunnels temporários do Cloudflare em desenvolvimento
-      if (
-        process.env.NODE_ENV === 'development' &&
-        origem &&
-        origem.endsWith('.trycloudflare.com')
-      ) {
-        return callback(null, true);
-      }
-      // Permite qualquer subdomínio do Render (deploy do frontend)
-      if (origem && origem.endsWith('.onrender.com')) {
-        return callback(null, true);
-      }
-      if (origensPermitidas.includes(origem)) {
-        return callback(null, true);
-      }
-      callback(new Error('Origem não permitida pelo CORS'));
-    },
+    origin: verificarOrigem,
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
     allowedHeaders: ['Content-Type', 'Authorization'],
@@ -113,15 +99,6 @@ app.use('/api/mensagens', rotasMensagens);
 app.use('/api/grupos', rotasGrupos);
 app.use('/api/upload', rotasUpload);
 
-// Health check — confirma que o servidor está no ar
-app.get('/api/health', (req, res) => {
-  res.json({
-    status: 'ok',
-    servico: 'GhostTalk API',
-    timestamp: new Date().toISOString(),
-  });
-});
-
 // ----------------------------------------------------------------
 // Tratamento de rota não encontrada (404)
 // ----------------------------------------------------------------
@@ -135,6 +112,8 @@ app.use((req, res) => {
 // eslint-disable-next-line no-unused-vars
 app.use((erro, req, res, next) => {
   const status = erro.status || 500;
+  // Registra o erro real no servidor (o cliente só recebe mensagem genérica)
+  logger.error('Erro não tratado na requisição:', `${req.method} ${req.path} -> ${erro.stack || erro.message}`);
 
   // Em produção, não expõe detalhes internos do erro
   const mensagem =

@@ -69,7 +69,10 @@ api.interceptors.response.use(
         const refreshToken = localStorage.getItem('ghosttalk_refresh_token');
         if (!refreshToken) throw new Error('Sem refresh token');
 
-        const { data } = await axios.post('/api/auth/refresh', { refreshToken });
+        // Usa a mesma BASE_URL: com '/api/auth/refresh' fixo, em produção (frontend e
+        // backend em domínios diferentes) o refresh ia para o próprio site e falhava,
+        // deslogando o usuário a cada 15 minutos.
+        const { data } = await axios.post(`${BASE_URL}/auth/refresh`, { refreshToken });
 
         localStorage.setItem('ghosttalk_access_token', data.accessToken);
         localStorage.setItem('ghosttalk_refresh_token', data.refreshToken);

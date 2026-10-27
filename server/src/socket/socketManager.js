@@ -13,6 +13,7 @@ const Usuario = require('../models/Usuario');
 const Mensagem = require('../models/Mensagem');
 const Conversa = require('../models/Conversa');
 const logger = require('../utils/logger');
+const { verificarOrigem } = require('../utils/origensPermitidas');
 
 // Mapeia usuarioId -> Set de socket IDs (suporte a múltiplos dispositivos)
 const usuariosConectados = new Map();
@@ -24,13 +25,17 @@ const usuariosConectados = new Map();
 function inicializarSocket(servidor) {
   const io = new Server(servidor, {
     cors: {
-      origin: process.env.CLIENT_URL || 'http://localhost:5173',
+      // Mesma regra do Express (inclui *.onrender.com). Antes só aceitava CLIENT_URL
+      // exato, então o socket falhava em silêncio se a URL do cliente não coincidisse.
+      origin: verificarOrigem,
       methods: ['GET', 'POST'],
       credentials: true,
     },
     // Ping para manter conexões ativas (detecta desconexões)
     pingTimeout: 60000,
     pingInterval: 25000,
+    // Limita o tamanho de cada mensagem de socket (arquivos vão por HTTP, não por socket)
+    maxHttpBufferSize: 1e6,
   });
 
   // ----------------------------------------------------------------
@@ -81,18 +86,24 @@ function inicializarSocket(servidor) {
     }
     usuariosConectados.get(usuarioId).add(socket.id);
 
-    // Entra automaticamente nas salas das conversas do usuário
-    const conversas = await Conversa.find({
-      'participantes.usuarioId': usuarioId,
-    }).select('_id');
+    // Este handler é async: sem try/catch, uma falha do MongoDB aqui vira
+    // "unhandled rejection" (antes isso derrubava o processo inteiro).
+    try {
+      // Entra automaticamente nas salas das conversas do usuário
+      const conversas = await Conversa.find({
+        'participantes.usuarioId': usuarioId,
+      }).select('_id');
 
-    conversas.forEach((c) => socket.join(c._id.toString()));
+      conversas.forEach((c) => socket.join(c._id.toString()));
 
-    // Marca usuário como online e notifica seus contatos
-    await Usuario.findByIdAndUpdate(usuarioId, {
-      $set: { online: true, ultimaAtividade: new Date() },
-    });
-    socket.broadcast.emit('usuarioOnline', { usuarioId });
+      // Marca usuário como online e notifica seus contatos
+      await Usuario.findByIdAndUpdate(usuarioId, {
+        $set: { online: true, ultimaAtividade: new Date() },
+      });
+      socket.broadcast.emit('usuarioOnline', { usuarioId });
+    } catch (erro) {
+      logger.error('Erro ao inicializar conexão do socket:', erro.stack || erro.message);
+    }
 
     // ----------------------------------------------------------------
     // Evento: enviar mensagem em tempo real
@@ -195,7 +206,10 @@ function inicializarSocket(servidor) {
     // ----------------------------------------------------------------
     // Evento: indicador de digitação
     // ----------------------------------------------------------------
-    socket.on('digitando', ({ conversaId, digitando }) => {
+    socket.on('digitando', (dados) => {
+      // Desestruturar `undefined` lançaria TypeError (exceção síncrona no handler)
+      const { conversaId, digitando } = dados || {};
+      if (!conversaId) return;
       socket.to(conversaId).emit('usuarioDigitando', {
         usuarioId,
         nomeUsuario: socket.nomeUsuario,
@@ -207,8 +221,10 @@ function inicializarSocket(servidor) {
     // ----------------------------------------------------------------
     // Evento: marcar mensagens como lidas
     // ----------------------------------------------------------------
-    socket.on('marcarComoLidas', async ({ conversaId }) => {
+    socket.on('marcarComoLidas', async (dados) => {
       try {
+        const { conversaId } = dados || {};
+        if (!conversaId) return;
         await Mensagem.updateMany(
           {
             conversaId,
@@ -238,8 +254,10 @@ function inicializarSocket(servidor) {
     // ----------------------------------------------------------------
     // Evento: adicionar reação a uma mensagem
     // ----------------------------------------------------------------
-    socket.on('adicionarReacao', async ({ mensagemId, emoji, conversaId }) => {
+    socket.on('adicionarReacao', async (dados) => {
       try {
+        const { mensagemId, emoji, conversaId } = dados || {};
+        if (!mensagemId || !emoji || !conversaId) return;
         const mensagem = await Mensagem.findById(mensagemId);
         if (!mensagem) return;
 
@@ -258,6 +276,7 @@ function inicializarSocket(servidor) {
         // Propaga a atualização para todos na conversa
         io.to(conversaId).emit('reacaoAtualizada', {
           mensagemId,
+          conversaId, // o cliente ignora o evento sem conversaId
           reacoes: mensagem.reacoes,
         });
       } catch (erro) {
@@ -271,22 +290,26 @@ function inicializarSocket(servidor) {
     socket.on('disconnect', async () => {
       logger.info(`Usuário desconectado: ${usuarioId} (socket: ${socket.id})`);
 
-      // Remove este socket do mapa
-      const sockets = usuariosConectados.get(usuarioId);
-      if (sockets) {
-        sockets.delete(socket.id);
-        if (sockets.size === 0) {
-          usuariosConectados.delete(usuarioId);
+      try {
+        // Remove este socket do mapa
+        const sockets = usuariosConectados.get(usuarioId);
+        if (sockets) {
+          sockets.delete(socket.id);
+          if (sockets.size === 0) {
+            usuariosConectados.delete(usuarioId);
 
-          // Só marca como offline se não há outros dispositivos conectados
-          await Usuario.findByIdAndUpdate(usuarioId, {
-            $set: { online: false, ultimaAtividade: new Date() },
-          });
-          socket.broadcast.emit('usuarioOffline', {
-            usuarioId,
-            ultimaAtividade: new Date(),
-          });
+            // Só marca como offline se não há outros dispositivos conectados
+            await Usuario.findByIdAndUpdate(usuarioId, {
+              $set: { online: false, ultimaAtividade: new Date() },
+            });
+            socket.broadcast.emit('usuarioOffline', {
+              usuarioId,
+              ultimaAtividade: new Date(),
+            });
+          }
         }
+      } catch (erro) {
+        logger.error('Erro ao processar desconexão do socket:', erro.stack || erro.message);
       }
     });
   });

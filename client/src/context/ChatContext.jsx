@@ -56,13 +56,31 @@ function mensagensReducer(estado, acao) {
     }
     case 'ATUALIZAR_MENSAGEM': {
       const lista = estado[acao.conversaId] || [];
+      // Só confere por id/tempId quando eles existem: `undefined === undefined`
+      // fazia a atualização atingir TODAS as mensagens do histórico.
+      const confere = (m) =>
+        (acao.mensagemId && m._id === acao.mensagemId) ||
+        (acao.tempId && m.tempId === acao.tempId);
       return {
         ...estado,
         [acao.conversaId]: lista.map((m) =>
-          m._id === acao.mensagemId || m.tempId === acao.tempId
-            ? { ...m, ...acao.atualizacao }
-            : m
+          confere(m) ? { ...m, ...acao.atualizacao } : m
         ),
+      };
+    }
+    case 'MARCAR_LIDAS': {
+      // Outro usuário leu as mensagens da conversa
+      const lista = estado[acao.conversaId] || [];
+      return {
+        ...estado,
+        [acao.conversaId]: lista.map((m) => ({
+          ...m,
+          statusEntrega: (m.statusEntrega || []).map((s) =>
+            String(s.usuarioId) === String(acao.leitorId)
+              ? { ...s, lido: true, lidoEm: acao.lidoEm }
+              : s
+          ),
+        })),
       };
     }
     case 'ADICIONAR_MENSAGENS_ANTERIORES': {
