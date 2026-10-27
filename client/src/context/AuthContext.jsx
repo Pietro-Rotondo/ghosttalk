@@ -74,10 +74,17 @@ export function AuthProvider({ children }) {
     setUsuario(data.usuario);
 
     // Garante que o par de chaves está gerado no dispositivo
-    if (!obterParDeChaves()) {
+    const chavesExistentes = obterParDeChaves();
+    if (!chavesExistentes) {
       const { chavePublica } = gerarParDeChaves();
-      // Atualiza a chave pública no servidor (novo dispositivo)
+      // Atualiza a chave pública no servidor (novo dispositivo ou primeiro login)
       await api.patch('/usuarios/perfil', { chavePublica });
+      // Atualiza o usuário local com a nova chave pública
+      setUsuario((u) => ({ ...u, chavePublica }));
+    } else if (!data.usuario.chavePublica) {
+      // Usuário existe mas não tem chave pública no servidor — sincroniza
+      await api.patch('/usuarios/perfil', { chavePublica: chavesExistentes.chavePublica });
+      setUsuario((u) => ({ ...u, chavePublica: chavesExistentes.chavePublica }));
     }
 
     return data;
