@@ -1,0 +1,100 @@
+# ============================================================
+# GhostTalk — Docker Compose
+# Orquestra: servidor Node.js + cliente Vite + banco MongoDB
+# Uso: docker compose up --build
+# ============================================================
+
+version: '3.9'
+
+services:
+  # ----------------------------------------------------------------
+  # MongoDB — Banco de dados principal
+  # ----------------------------------------------------------------
+  mongodb:
+    image: mongo:7.0
+    container_name: ghosttalk_mongodb
+    restart: unless-stopped
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ghosttalk
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_ROOT_PASSWORD:-ghosttalk_senha_local}
+      MONGO_INITDB_DATABASE: ghosttalk
+    volumes:
+      - mongodb_dados:/data/db
+    ports:
+      - "27017:27017"
+    networks:
+      - ghosttalk_rede
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ----------------------------------------------------------------
+  # Servidor Backend — Node.js / Express
+  # ----------------------------------------------------------------
+  servidor:
+    build:
+      context: ./server
+      dockerfile: Dockerfile
+    container_name: ghosttalk_servidor
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      PORT: 4000
+      MONGODB_URI: mongodb://ghosttalk:${MONGO_ROOT_PASSWORD:-ghosttalk_senha_local}@mongodb:27017/ghosttalk?authSource=admin
+      JWT_SECRET: ${JWT_SECRET:-TROQUE_EM_PRODUCAO}
+      JWT_EXPIRES_IN: ${JWT_EXPIRES_IN:-15m}
+      JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET:-TROQUE_EM_PRODUCAO_REFRESH}
+      JWT_REFRESH_EXPIRES_IN: ${JWT_REFRESH_EXPIRES_IN:-7d}
+      CLIENT_URL: ${CLIENT_URL:-http://localhost:5173}
+      UPLOAD_DIR: uploads
+      MAX_FILE_SIZE: 5242880
+      LOGIN_MAX_ATTEMPTS: 5
+      LOGIN_WINDOW_MS: 60000
+      CLEANUP_INTERVAL_MS: 3600000
+    volumes:
+      - uploads_dados:/app/uploads
+    ports:
+      - "4000:4000"
+    networks:
+      - ghosttalk_rede
+    depends_on:
+      mongodb:
+        condition: service_healthy
+
+  # ----------------------------------------------------------------
+  # Cliente Frontend — Vite (apenas em desenvolvimento)
+  # Em produção, o build estático é servido pelo servidor
+  # ----------------------------------------------------------------
+  cliente:
+    build:
+      context: ./client
+      dockerfile: Dockerfile
+    container_name: ghosttalk_cliente
+    restart: unless-stopped
+    environment:
+      VITE_API_URL: http://servidor:4000
+    ports:
+      - "5173:80"
+    networks:
+      - ghosttalk_rede
+    depends_on:
+      - servidor
+
+# ----------------------------------------------------------------
+# Volumes persistentes
+# ----------------------------------------------------------------
+volumes:
+  mongodb_dados:
+    name: ghosttalk_mongodb_dados
+  uploads_dados:
+    name: ghosttalk_uploads_dados
+
+# ----------------------------------------------------------------
+# Rede interna
+# ----------------------------------------------------------------
+networks:
+  ghosttalk_rede:
+    name: ghosttalk_rede
+    driver: bridge

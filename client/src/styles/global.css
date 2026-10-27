@@ -1,0 +1,173 @@
+/* GhostTalk — Estilos globais */
+/* @import deve preceder @tailwind — ordem obrigatória */
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    /* Tokens de design — modo escuro (padrão) */
+    --cor-fundo: #1e1f22;
+    --cor-superficie: #2b2d31;
+    --cor-borda: #3f4147;
+    --cor-texto: #dcddde;
+    --cor-texto-mudo: #96989d;
+    --cor-acento: #7c3aed;
+    --cor-acento-hover: #6d28d9;
+    --cor-mensagem-propria: #5865f2;
+    --cor-mensagem-outro: #2b2d31;
+  }
+
+  .tema-claro {
+    --cor-fundo: #ffffff;
+    --cor-superficie: #f2f3f5;
+    --cor-borda: #e3e5e8;
+    --cor-texto: #2e3338;
+    --cor-texto-mudo: #6d6f78;
+    --cor-acento: #7c3aed;
+    --cor-mensagem-propria: #5865f2;
+    --cor-mensagem-outro: #e9eaec;
+  }
+
+  * {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+  }
+
+  html {
+    font-family: 'Inter', system-ui, -apple-system, sans-serif;
+    font-size: 15px;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  body {
+    background-color: var(--cor-fundo);
+    color: var(--cor-texto);
+    min-height: 100vh;
+    overflow: hidden;
+  }
+
+  /* Barra de rolagem customizada */
+  ::-webkit-scrollbar {
+    width: 6px;
+  }
+
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    background-color: var(--cor-borda);
+    border-radius: 3px;
+  }
+
+  ::-webkit-scrollbar-thumb:hover {
+    background-color: var(--cor-texto-mudo);
+  }
+}
+
+@layer components {
+  /* Glassmorphism — efeito vidro para cards e painéis */
+  .glass {
+    @apply backdrop-blur-md bg-white/5 border border-white/10;
+  }
+
+  /* Botão principal */
+  .btn-primario {
+    @apply px-4 py-2 rounded-lg font-medium text-sm
+           bg-fantasma-500 hover:bg-fantasma-600 text-white
+           transition-all duration-150 active:scale-95
+           focus:outline-none focus:ring-2 focus:ring-fantasma-400 focus:ring-offset-2 focus:ring-offset-escuro-800;
+  }
+
+  /* Botão secundário */
+  .btn-secundario {
+    @apply px-4 py-2 rounded-lg font-medium text-sm
+           bg-escuro-700 hover:bg-escuro-600 text-escuro-100
+           border border-escuro-600 transition-all duration-150 active:scale-95
+           focus:outline-none focus:ring-2 focus:ring-escuro-500;
+  }
+
+  /* Campo de texto padrão */
+  .campo-texto {
+    @apply w-full px-3 py-2 rounded-lg text-sm
+           bg-escuro-900 border border-escuro-600 text-escuro-100
+           placeholder-escuro-400
+           focus:outline-none focus:border-fantasma-500 focus:ring-1 focus:ring-fantasma-500
+           transition-colors duration-150;
+  }
+
+  /* Bolha de mensagem — remetente próprio */
+  .bolha-propria {
+    @apply bg-fantasma-600 text-white rounded-2xl rounded-br-md px-4 py-2
+           max-w-[75%] break-words shadow-md;
+  }
+
+  /* Bolha de mensagem — outro participante */
+  .bolha-outro {
+    @apply bg-escuro-700 text-escuro-100 rounded-2xl rounded-bl-md px-4 py-2
+           max-w-[75%] break-words shadow-md;
+  }
+
+  /* Item de conversa na sidebar */
+  .item-conversa {
+    @apply flex items-center gap-3 px-3 py-2 rounded-lg cursor-pointer
+           hover:bg-escuro-700 transition-colors duration-100 select-none;
+  }
+
+  .item-conversa.ativo {
+    @apply bg-escuro-600;
+  }
+}
+
+@layer utilities {
+  /* Truncar texto com reticências */
+  .truncar-1 {
+    @apply overflow-hidden whitespace-nowrap text-ellipsis;
+  }
+
+  /* Animação de entrada de mensagem */
+  .animar-entrada {
+    animation: entradaMensagem 0.2s ease-out;
+  }
+
+  @keyframes entradaMensagem {
+    from {
+      opacity: 0;
+      transform: translateY(6px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+
+  /* Indicador de digitação — animação de pontinhos */
+  .digitando-ponto {
+    animation: digitandoPonto 1.4s ease-in-out infinite;
+  }
+
+  .digitando-ponto:nth-child(2) {
+    animation-delay: 0.2s;
+  }
+
+  .digitando-ponto:nth-child(3) {
+    animation-delay: 0.4s;
+  }
+
+  @keyframes digitandoPonto {
+    0%, 80%, 100% {
+      transform: translateY(0);
+      opacity: 0.4;
+    }
+    40% {
+      transform: translateY(-4px);
+      opacity: 1;
+    }
+  }
+}

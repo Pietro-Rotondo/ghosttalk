@@ -1,0 +1,306 @@
+/**
+ * GhostTalk — Área de Chat Principal
+ * Exibe o histórico de mensagens e o campo de envio.
+ * Gerencia: envio de mensagens, indicador de digitação, scroll automático.
+ */
+
+import { useState, useEffect, useRef, useCallback } from 'react';
+import { ArrowLeft, MoreVertical, Lock, Download, Trash2, ShieldCheck } from 'lucide-react';
+import { useAuth } from '../context/AuthContext';
+import { useChat } from '../context/ChatContext';
+import { useSocket } from '../hooks/useSocket';
+import BolhaMensagem from './BolhaMensagem';
+import CampoEnvio from './CampoEnvio';
+import Avatar from './Avatar';
+import IndicadorDigitando from './IndicadorDigitando';
+import ModalExportacao from './ModalExportacao';
+import ModalFingerprint from './ModalFingerprint';
+import { criptografarMensagem } from '../utils/criptografia';
+import { formatarTempoRelativo } from '../utils/formatacao';
+import toast from 'react-hot-toast';
+
+export default function AreaChat({ conversa, onVoltar }) {
+  const { usuario } = useAuth();
+  const { mensagensPorConversa, carregarMensagens, digitandoPor } = useChat();
+  const { enviarMensagem, emitirDigitando, marcarComoLidas } = useSocket();
+
+  const mensagens = mensagensPorConversa[conversa._id] || [];
+  const digitando = digitandoPor[conversa._id] || [];
+
+  const [carregando, setCarregando] = useState(false);
+  const [pagina, setPagina] = useState(1);
+  const [temMais, setTemMais] = useState(true);
+  const [modalExportacao, setModalExportacao] = useState(false);
+  const [modalFingerprint, setModalFingerprint] = useState(false);
+  const [menuAberto, setMenuAberto] = useState(false);
+
+  const containerRef = useRef(null);
+  const ultimaMensagemRef = useRef(null);
+  const primeiraCarregagem = useRef(true);
+
+  // ----------------------------------------------------------------
+  // Carrega mensagens ao entrar na conversa
+  // ----------------------------------------------------------------
+  useEffect(() => {
+    setPagina(1);
+    setTemMais(true);
+    primeiraCarregagem.current = true;
+
+    const carregar = async () => {
+      setCarregando(true);
+      const paginacao = await carregarMensagens(conversa._id, 1);
+      if (paginacao) {
+        setTemMais(paginacao.pagina < paginacao.totalPaginas);
+      }
+      setCarregando(false);
+    };
+
+    carregar();
+    marcarComoLidas(conversa._id);
+  }, [conversa._id, carregarMensagens, marcarComoLidas]);
+
+  // ----------------------------------------------------------------
+  // Scroll automático para a última mensagem
+  // ----------------------------------------------------------------
+  useEffect(() => {
+    if (primeiraCarregagem.current && mensagens.length > 0) {
+      ultimaMensagemRef.current?.scrollIntoView({ behavior: 'auto' });
+      primeiraCarregagem.current = false;
+    } else if (!primeiraCarregagem.current && mensagens.length > 0) {
+      ultimaMensagemRef.current?.scrollIntoView({ behavior: 'smooth' });
+    }
+  }, [mensagens.length]);
+
+  // ----------------------------------------------------------------
+  // Carregamento de mensagens anteriores (infinite scroll)
+  // ----------------------------------------------------------------
+  const carregarMaisAnteriores = useCallback(async () => {
+    if (carregando || !temMais) return;
+
+    const novaPagina = pagina + 1;
+    setCarregando(true);
+
+    // Salva a posição de scroll antes de adicionar mensagens
+    const container = containerRef.current;
+    const alturaAntes = container?.scrollHeight || 0;
+
+    const paginacao = await carregarMensagens(conversa._id, novaPagina);
+
+    if (paginacao) {
+      setPagina(novaPagina);
+      setTemMais(novaPagina < paginacao.totalPaginas);
+    }
+
+    setCarregando(false);
+
+    // Restaura a posição de scroll
+    if (container) {
+      container.scrollTop = container.scrollHeight - alturaAntes;
+    }
+  }, [carregando, temMais, pagina, conversa._id, carregarMensagens]);
+
+  // Detecta scroll no topo para carregar mais mensagens
+  const handleScroll = useCallback(() => {
+    const container = containerRef.current;
+    if (!container) return;
+    if (container.scrollTop < 100 && !carregando && temMais) {
+      carregarMaisAnteriores();
+    }
+  }, [carregarMaisAnteriores, carregando, temMais]);
+
+  // ----------------------------------------------------------------
+  // Envio de mensagem
+  // ----------------------------------------------------------------
+  const handleEnviar = useCallback(async (texto, tipo = 'texto') => {
+    // Obtém a chave pública do destinatário (ou da conversa)
+    const destinatario = obterDestinatario(conversa, usuario);
+    const chavePublicaDestinatario = destinatario?.chavePublica;
+
+    if (!chavePublicaDestinatario) {
+      toast.error('Não foi possível criptografar a mensagem: chave pública do destinatário não encontrada');
+      return;
+    }
+
+    let cifrado;
+    try {
+      cifrado = criptografarMensagem(texto, chavePublicaDestinatario);
+    } catch (erro) {
+      toast.error('Erro de criptografia: ' + erro.message);
+      return;
+    }
+
+    try {
+      await enviarMensagem({
+        conversaId: conversa._id,
+        conteudoCriptografado: cifrado.conteudoCriptografado,
+        nonce: cifrado.nonce,
+        tipo,
+        tempId: `temp-${Date.now()}`,
+      });
+      emitirDigitando(conversa._id, false);
+    } catch (erro) {
+      toast.error('Erro ao enviar mensagem');
+    }
+  }, [conversa, usuario, enviarMensagem, emitirDigitando]);
+
+  // ----------------------------------------------------------------
+  // Renderização
+  // ----------------------------------------------------------------
+  const nomeConversa = obterNomeConversa(conversa, usuario);
+  const fotoConversa = obterFotoConversa(conversa, usuario);
+  const outroParticipante = obterDestinatario(conversa, usuario);
+
+  return (
+    <div className="flex flex-col h-full">
+      {/* Cabeçalho do chat */}
+      <header className="flex items-center gap-3 px-4 py-3 border-b border-escuro-700 bg-escuro-900 flex-shrink-0">
+        {/* Botão voltar (apenas mobile) */}
+        <button
+          onClick={onVoltar}
+          className="md:hidden p-1.5 rounded-lg hover:bg-escuro-700 text-escuro-400 hover:text-white transition-colors"
+        >
+          <ArrowLeft className="w-5 h-5" />
+        </button>
+
+        <Avatar nome={nomeConversa} foto={fotoConversa} tamanho="sm" />
+
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-2">
+            <h2 className="font-semibold text-white truncate">{nomeConversa}</h2>
+            <Lock className="w-3 h-3 text-green-400 flex-shrink-0" title="Criptografado E2EE" />
+          </div>
+          <p className="text-xs text-escuro-400 truncate">
+            {outroParticipante?.online
+              ? 'Online agora'
+              : outroParticipante?.ultimaAtividade
+              ? `Visto ${formatarTempoRelativo(outroParticipante.ultimaAtividade)}`
+              : conversa.tipo === 'grupo'
+              ? `${conversa.participantes?.length || 0} participantes`
+              : ''}
+          </p>
+        </div>
+
+        {/* Menu de opções */}
+        <div className="relative">
+          <button
+            onClick={() => setMenuAberto((v) => !v)}
+            className="p-2 rounded-lg hover:bg-escuro-700 text-escuro-400 hover:text-white transition-colors"
+          >
+            <MoreVertical className="w-5 h-5" />
+          </button>
+
+          {menuAberto && (
+            <div className="absolute right-0 top-full mt-1 w-52 bg-escuro-700 rounded-xl border border-escuro-600 shadow-xl z-50 overflow-hidden">
+              <button
+                onClick={() => { setModalExportacao(true); setMenuAberto(false); }}
+                className="flex items-center gap-3 w-full px-4 py-3 text-sm text-escuro-200 hover:bg-escuro-600 transition-colors"
+              >
+                <Download className="w-4 h-4" />
+                Exportar histórico
+              </button>
+              <button
+                onClick={() => { setModalFingerprint(true); setMenuAberto(false); }}
+                className="flex items-center gap-3 w-full px-4 py-3 text-sm text-escuro-200 hover:bg-escuro-600 transition-colors"
+              >
+                <ShieldCheck className="w-4 h-4" />
+                Verificar fingerprint
+              </button>
+            </div>
+          )}
+        </div>
+      </header>
+
+      {/* Área de mensagens */}
+      <div
+        ref={containerRef}
+        onScroll={handleScroll}
+        className="flex-1 overflow-y-auto px-4 py-4 space-y-1"
+      >
+        {/* Indicador de carregamento de mensagens anteriores */}
+        {carregando && pagina > 1 && (
+          <div className="text-center py-4">
+            <div className="inline-block w-5 h-5 border-2 border-fantasma-500 border-t-transparent rounded-full animate-spin" />
+          </div>
+        )}
+
+        {/* Badge de criptografia */}
+        <div className="flex justify-center mb-4">
+          <div className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-escuro-700/50 border border-escuro-600">
+            <Lock className="w-3 h-3 text-green-400" />
+            <span className="text-xs text-escuro-400">
+              Conversa protegida por criptografia ponta a ponta
+            </span>
+          </div>
+        </div>
+
+        {/* Mensagens */}
+        {mensagens.map((mensagem, indice) => (
+          <BolhaMensagem
+            key={mensagem._id || mensagem.tempId || indice}
+            mensagem={mensagem}
+            ePropia={
+              (mensagem.remetenteId?._id || mensagem.remetenteId) === (usuario?._id || usuario?.id)
+            }
+            mostrarAutor={conversa.tipo === 'grupo'}
+          />
+        ))}
+
+        {/* Indicador de digitação */}
+        {digitando.length > 0 && (
+          <IndicadorDigitando usuarios={digitando} />
+        )}
+
+        {/* Âncora para scroll automático */}
+        <div ref={ultimaMensagemRef} />
+      </div>
+
+      {/* Campo de envio */}
+      <CampoEnvio
+        conversaId={conversa._id}
+        onEnviar={handleEnviar}
+        onDigitando={(d) => emitirDigitando(conversa._id, d)}
+      />
+
+      {/* Modais */}
+      {modalExportacao && (
+        <ModalExportacao
+          conversa={conversa}
+          mensagens={mensagens}
+          onFechar={() => setModalExportacao(false)}
+        />
+      )}
+      {modalFingerprint && (
+        <ModalFingerprint
+          conversa={conversa}
+          onFechar={() => setModalFingerprint(false)}
+        />
+      )}
+    </div>
+  );
+}
+
+// ----------------------------------------------------------------
+// Helpers
+// ----------------------------------------------------------------
+function obterNomeConversa(conversa, usuario) {
+  if (conversa.tipo === 'grupo') return conversa.grupo?.nome || 'Grupo';
+  const outro = obterDestinatario(conversa, usuario);
+  return outro?.nomeExibicao || outro?.nomeUsuario || 'Conversa';
+}
+
+function obterFotoConversa(conversa, usuario) {
+  if (conversa.tipo === 'grupo') return conversa.grupo?.fotoCapa;
+  return obterDestinatario(conversa, usuario)?.fotoPerfil;
+}
+
+function obterDestinatario(conversa, usuario) {
+  if (!usuario || conversa.tipo === 'grupo') return null;
+  const outro = conversa.participantes?.find(
+    (p) => {
+      const id = p.usuarioId?._id || p.usuarioId?.id || p.usuarioId;
+      const meuId = usuario._id || usuario.id;
+      return id !== meuId && id?.toString() !== meuId?.toString();
+    }
+  );
+  return outro?.usuarioId || null;
+}
