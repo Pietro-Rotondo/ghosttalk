@@ -37,8 +37,13 @@ export function useSocket() {
     const token = localStorage.getItem('ghosttalk_access_token');
     if (!token) return;
 
+    // Em produção conecta direto no backend; em desenvolvimento usa mesma origem (proxy Vite)
+    const socketUrl = import.meta.env.VITE_API_URL
+      ? `https://${import.meta.env.VITE_API_URL}`
+      : window.location.origin;
+
     // Cria a conexão Socket.IO com autenticação JWT
-    socketInstance = io(window.location.origin, {
+    socketInstance = io(socketUrl, {
       auth: { token },
       reconnection: true,
       reconnectionAttempts: 5,
