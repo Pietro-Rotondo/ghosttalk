@@ -26,7 +26,10 @@ async function iniciar() {
     await conectarBancoDeDados();
     logger.info('Conectado ao banco de dados com sucesso');
 
-    servidor.listen(PORTA, '127.0.0.1', () => {
+    // Em produção escuta em 0.0.0.0 para aceitar conexões externas
+    // Em desenvolvimento usa 127.0.0.1 por segurança
+    const HOST = process.env.NODE_ENV === 'production' ? '0.0.0.0' : '127.0.0.1';
+    servidor.listen(PORTA, HOST, () => {
       logger.info(`Servidor GhostTalk rodando na porta ${PORTA} em modo ${process.env.NODE_ENV}`);
     });
 
