@@ -64,6 +64,10 @@ app.use(
       ) {
         return callback(null, true);
       }
+      // Permite qualquer subdomínio do Render (deploy do frontend)
+      if (origem && origem.endsWith('.onrender.com')) {
+        return callback(null, true);
+      }
       if (origensPermitidas.includes(origem)) {
         return callback(null, true);
       }
