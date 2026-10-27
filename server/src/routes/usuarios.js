@@ -70,12 +70,26 @@ roteador.get('/buscar', autenticar, async (req, res) => {
       'privacidade.perfilInvisivel': false,
     })
       .limit(20)
-      .select('nomeUsuario nomeExibicao fotoPerfil status online');
+      // chavePublica necessária para criptografia E2EE
+      .select('nomeUsuario nomeExibicao fotoPerfil status online chavePublica');
 
     res.json({ usuarios: usuarios.map((u) => u.toPerfilPublico()) });
   } catch (erro) {
     logger.error('Erro na busca de usuários:', erro.message);
     res.status(500).json({ erro: 'Erro ao buscar usuários' });
+  }
+});
+
+// GET /api/usuarios/id/:id — Perfil público por ID (usado internamente)
+roteador.get('/id/:id', autenticar, async (req, res) => {
+  try {
+    const usuario = await Usuario.findById(req.params.id);
+    if (!usuario || !usuario.ativo) {
+      return res.status(404).json({ erro: 'Usuário não encontrado' });
+    }
+    res.json(usuario.toPerfilPublico());
+  } catch (erro) {
+    res.status(500).json({ erro: 'Erro ao buscar usuário' });
   }
 });
 

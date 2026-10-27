@@ -1,11 +1,12 @@
 /**
  * GhostTalk — Campo de Envio de Mensagens
- * Input com suporte a emoji, digitação em múltiplas linhas e envio com Enter.
+ * Input com suporte a emoji, mídia, digitação em múltiplas linhas e envio com Enter.
  */
 
 import { useState, useRef, useCallback } from 'react';
-import { Send, Smile, Paperclip } from 'lucide-react';
+import { Send, Smile } from 'lucide-react';
 import EmojiPicker from 'emoji-picker-react';
+import BotaoMidia from './BotaoMidia';
 
 export default function CampoEnvio({ conversaId, onEnviar, onDigitando }) {
   const [texto, setTexto] = useState('');
@@ -113,6 +114,15 @@ export default function CampoEnvio({ conversaId, onEnviar, onDigitando }) {
         >
           <Smile className="w-5 h-5" />
         </button>
+
+        {/* Botão de mídia */}
+        <BotaoMidia
+          onEnviarMidia={async (metadados, tipo) => {
+            // Envia a URL do arquivo como conteúdo da mensagem
+            await onEnviar(metadados.url, tipo, metadados);
+          }}
+          disabled={!conversaId}
+        />
 
         {/* Área de texto */}
         <div className="flex-1 relative">

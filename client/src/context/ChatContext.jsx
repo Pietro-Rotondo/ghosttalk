@@ -58,6 +58,7 @@ function mensagensReducer(estado, acao) {
 
 export function ChatProvider({ children }) {
   const [conversas, setConversas] = useState([]);
+  // Expõe setConversas para que AreaChat possa remover conversa localmente
   const [conversaAtiva, setConversaAtiva] = useState(null);
   const [carregandoConversas, setCarregandoConversas] = useState(false);
   const [mensagensPorConversa, despacharMensagens] = useReducer(mensagensReducer, {});

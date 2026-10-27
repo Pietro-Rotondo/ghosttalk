@@ -9,6 +9,7 @@ const { v4: uuidv4 } = require('uuid');
 const roteador = express.Router();
 const { autenticar } = require('../middleware/autenticacao');
 const Conversa = require('../models/Conversa');
+const Mensagem = require('../models/Mensagem');
 const Usuario = require('../models/Usuario');
 const logger = require('../utils/logger');
 
@@ -18,7 +19,8 @@ roteador.get('/conversas', autenticar, async (req, res) => {
     const conversas = await Conversa.find({
       'participantes.usuarioId': req.usuarioId,
     })
-      .populate('participantes.usuarioId', 'nomeUsuario nomeExibicao fotoPerfil online ultimaAtividade')
+      // chavePublica é essencial para a criptografia E2EE no frontend
+      .populate('participantes.usuarioId', 'nomeUsuario nomeExibicao fotoPerfil online ultimaAtividade chavePublica status')
       .populate('ultimaMensagem')
       .sort({ updatedAt: -1 });
 
@@ -42,19 +44,16 @@ roteador.post(
         return res.status(400).json({ erro: 'Não é possível conversar consigo mesmo' });
       }
 
-      // Verifica se o destinatário existe
       const destinatario = await Usuario.findById(destinatarioId);
       if (!destinatario) {
         return res.status(404).json({ erro: 'Usuário não encontrado' });
       }
 
-      // Busca conversa existente entre os dois usuários
       let conversa = await Conversa.findOne({
         tipo: 'individual',
         'participantes.usuarioId': { $all: [req.usuarioId, destinatarioId] },
-      }).populate('participantes.usuarioId', 'nomeUsuario nomeExibicao fotoPerfil online');
+      }).populate('participantes.usuarioId', 'nomeUsuario nomeExibicao fotoPerfil online chavePublica status ultimaAtividade');
 
-      // Se não existe, cria nova conversa
       if (!conversa) {
         conversa = new Conversa({
           tipo: 'individual',
@@ -64,7 +63,7 @@ roteador.post(
           ],
         });
         await conversa.save();
-        await conversa.populate('participantes.usuarioId', 'nomeUsuario nomeExibicao fotoPerfil online');
+        await conversa.populate('participantes.usuarioId', 'nomeUsuario nomeExibicao fotoPerfil online chavePublica status ultimaAtividade');
       }
 
       res.json({ conversa });
@@ -87,7 +86,6 @@ roteador.post(
     try {
       const { nome, descricao, participantesIds } = req.body;
 
-      // Remove duplicatas e inclui o criador como administrador
       const idsUnicos = [...new Set([...participantesIds])].filter(
         (id) => id !== req.usuarioId
       );
@@ -104,7 +102,7 @@ roteador.post(
       });
 
       await grupo.save();
-      await grupo.populate('participantes.usuarioId', 'nomeUsuario nomeExibicao fotoPerfil');
+      await grupo.populate('participantes.usuarioId', 'nomeUsuario nomeExibicao fotoPerfil chavePublica status');
 
       logger.info(`Grupo criado: ${nome} por ${req.usuarioId}`);
       res.status(201).json({ conversa: grupo });
@@ -115,7 +113,155 @@ roteador.post(
   }
 );
 
-// POST /api/grupos/:conversaId/convite — Gerar link de sala temporária
+// PATCH /api/grupos/:conversaId — Editar grupo (apenas admins)
+roteador.patch('/:conversaId', autenticar, async (req, res) => {
+  try {
+    const { nome, descricao } = req.body;
+
+    const conversa = await Conversa.findOne({
+      _id: req.params.conversaId,
+      tipo: 'grupo',
+      'participantes': {
+        $elemMatch: { usuarioId: req.usuarioId, papel: 'administrador' },
+      },
+    });
+
+    if (!conversa) {
+      return res.status(403).json({ erro: 'Sem permissão ou grupo não encontrado' });
+    }
+
+    if (nome !== undefined) conversa.grupo.nome = nome;
+    if (descricao !== undefined) conversa.grupo.descricao = descricao;
+    await conversa.save();
+
+    res.json({ mensagem: 'Grupo atualizado', conversa });
+  } catch (erro) {
+    logger.error('Erro ao editar grupo:', erro.message);
+    res.status(500).json({ erro: 'Erro ao editar grupo' });
+  }
+});
+
+// PATCH /api/grupos/:conversaId/admin — Promover/rebaixar admin
+roteador.patch('/:conversaId/admin', autenticar, async (req, res) => {
+  try {
+    const { participanteId, promover } = req.body;
+
+    const conversa = await Conversa.findOne({
+      _id: req.params.conversaId,
+      tipo: 'grupo',
+      'participantes': {
+        $elemMatch: { usuarioId: req.usuarioId, papel: 'administrador' },
+      },
+    });
+
+    if (!conversa) {
+      return res.status(403).json({ erro: 'Sem permissão' });
+    }
+
+    const participante = conversa.participantes.find(
+      (p) => p.usuarioId.toString() === participanteId
+    );
+
+    if (!participante) {
+      return res.status(404).json({ erro: 'Participante não encontrado' });
+    }
+
+    participante.papel = promover ? 'administrador' : 'membro';
+    await conversa.save();
+
+    res.json({ mensagem: `Participante ${promover ? 'promovido' : 'rebaixado'}` });
+  } catch (erro) {
+    res.status(500).json({ erro: 'Erro ao alterar admin' });
+  }
+});
+
+// DELETE /api/grupos/:conversaId/participante/:participanteId — Remover membro
+roteador.delete('/:conversaId/participante/:participanteId', autenticar, async (req, res) => {
+  try {
+    const conversa = await Conversa.findOne({
+      _id: req.params.conversaId,
+      tipo: 'grupo',
+      'participantes': {
+        $elemMatch: { usuarioId: req.usuarioId, papel: 'administrador' },
+      },
+    });
+
+    if (!conversa) {
+      return res.status(403).json({ erro: 'Sem permissão' });
+    }
+
+    // Não pode remover a si mesmo por aqui
+    if (req.params.participanteId === req.usuarioId) {
+      return res.status(400).json({ erro: 'Use a opção de sair do grupo' });
+    }
+
+    conversa.participantes = conversa.participantes.filter(
+      (p) => p.usuarioId.toString() !== req.params.participanteId
+    );
+    await conversa.save();
+
+    res.json({ mensagem: 'Participante removido' });
+  } catch (erro) {
+    res.status(500).json({ erro: 'Erro ao remover participante' });
+  }
+});
+
+// DELETE /api/grupos/:conversaId — Excluir grupo (apenas admins) ou conversa individual
+roteador.delete('/:conversaId', autenticar, async (req, res) => {
+  try {
+    const conversa = await Conversa.findOne({
+      _id: req.params.conversaId,
+      'participantes.usuarioId': req.usuarioId,
+    });
+
+    if (!conversa) {
+      return res.status(404).json({ erro: 'Conversa não encontrada' });
+    }
+
+    // Grupos: apenas admins podem excluir
+    if (conversa.tipo === 'grupo') {
+      const participante = conversa.participantes.find(
+        (p) => p.usuarioId.toString() === req.usuarioId
+      );
+      if (participante?.papel !== 'administrador') {
+        return res.status(403).json({ erro: 'Apenas administradores podem excluir o grupo' });
+      }
+    }
+
+    // Remove todas as mensagens e a conversa
+    await Mensagem.deleteMany({ conversaId: conversa._id });
+    await conversa.deleteOne();
+
+    logger.info(`Conversa excluída: ${conversa._id} por ${req.usuarioId}`);
+    res.json({ mensagem: 'Conversa excluída' });
+  } catch (erro) {
+    logger.error('Erro ao excluir conversa:', erro.message);
+    res.status(500).json({ erro: 'Erro ao excluir conversa' });
+  }
+});
+
+// DELETE /api/grupos/conversa/:conversaId — Alias para apagar conversa individual
+roteador.delete('/conversa/:conversaId', autenticar, async (req, res) => {
+  try {
+    const conversa = await Conversa.findOne({
+      _id: req.params.conversaId,
+      'participantes.usuarioId': req.usuarioId,
+    });
+
+    if (!conversa) {
+      return res.status(404).json({ erro: 'Conversa não encontrada' });
+    }
+
+    await Mensagem.deleteMany({ conversaId: conversa._id });
+    await conversa.deleteOne();
+
+    res.json({ mensagem: 'Conversa apagada' });
+  } catch (erro) {
+    res.status(500).json({ erro: 'Erro ao apagar conversa' });
+  }
+});
+
+// POST /api/grupos/convite — Gerar link de sala temporária
 roteador.post('/convite', autenticar, async (req, res) => {
   try {
     const { expiracaoHoras = 24, destruirAposUso = false } = req.body;
@@ -123,11 +269,10 @@ roteador.post('/convite', autenticar, async (req, res) => {
     const codigoConvite = uuidv4();
     const expiracao = new Date(Date.now() + expiracaoHoras * 60 * 60 * 1000);
 
-    // Cria uma sala temporária sem participantes fixos
     const sala = new Conversa({
       tipo: 'grupo',
       participantes: [{ usuarioId: req.usuarioId, papel: 'administrador' }],
-      grupo: { nome: `Sala temporária` },
+      grupo: { nome: 'Sala temporária' },
       temporaria: {
         ativa: true,
         codigoConvite,
@@ -164,7 +309,6 @@ roteador.post('/entrar/:codigoConvite', autenticar, async (req, res) => {
       return res.status(404).json({ erro: 'Link de convite inválido ou expirado' });
     }
 
-    // Adiciona o usuário se ainda não estiver na sala
     const jaParticipante = sala.participantes.some(
       (p) => p.usuarioId.toString() === req.usuarioId
     );
@@ -174,7 +318,6 @@ roteador.post('/entrar/:codigoConvite', autenticar, async (req, res) => {
       await sala.save();
     }
 
-    // Destrói a sala após o primeiro uso se configurado
     if (sala.temporaria.destruirAposUso && sala.participantes.length >= 2) {
       sala.temporaria.ativa = false;
       await sala.save();
@@ -187,10 +330,10 @@ roteador.post('/entrar/:codigoConvite', autenticar, async (req, res) => {
   }
 });
 
-// PATCH /api/grupos/:conversaId/auto-destruicao — Configurar auto-destruição
+// PATCH /api/grupos/:conversaId/auto-destruicao
 roteador.patch('/:conversaId/auto-destruicao', autenticar, async (req, res) => {
   try {
-    const { duracaoSegundos } = req.body; // 0 = desabilitado
+    const { duracaoSegundos } = req.body;
 
     const conversa = await Conversa.findOne({
       _id: req.params.conversaId,

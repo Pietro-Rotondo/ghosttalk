@@ -5,17 +5,49 @@
 
 import { createContext, useContext, useState, useEffect, useCallback } from 'react';
 import api from '../utils/api';
-import { gerarParDeChaves, obterParDeChaves, removerChavesLocais } from '../utils/criptografia';
+import { gerarParDeChaves, obterParDeChaves } from '../utils/criptografia';
 import toast from 'react-hot-toast';
 
 const AuthContext = createContext(null);
+
+/**
+ * Garante que o usuário tem chave pública registrada no servidor.
+ * Chamada após login e verificação de sessão.
+ */
+async function garantirChavePublica(usuarioData, setUsuario) {
+  const chavesLocais = obterParDeChaves();
+
+  if (!chavesLocais) {
+    // Dispositivo novo — gera um par de chaves e registra no servidor
+    const { chavePublica } = gerarParDeChaves();
+    try {
+      await api.patch('/usuarios/perfil', { chavePublica });
+      setUsuario((u) => ({ ...u, chavePublica }));
+      console.info('[GhostTalk] Chave pública gerada e registrada:', chavePublica.slice(0, 16) + '...');
+    } catch (e) {
+      console.error('[GhostTalk] Falha ao registrar chave pública:', e.message);
+    }
+    return;
+  }
+
+  // Dispositivo já tem chaves — verifica se o servidor está atualizado
+  if (!usuarioData.chavePublica || usuarioData.chavePublica !== chavesLocais.chavePublica) {
+    try {
+      await api.patch('/usuarios/perfil', { chavePublica: chavesLocais.chavePublica });
+      setUsuario((u) => ({ ...u, chavePublica: chavesLocais.chavePublica }));
+      console.info('[GhostTalk] Chave pública sincronizada com o servidor');
+    } catch (e) {
+      console.error('[GhostTalk] Falha ao sincronizar chave pública:', e.message);
+    }
+  }
+}
 
 export function AuthProvider({ children }) {
   const [usuario, setUsuario] = useState(null);
   const [carregando, setCarregando] = useState(true);
 
   // ----------------------------------------------------------------
-  // Inicialização: verifica se há sessão ativa
+  // Inicialização: verifica se há sessão ativa e sincroniza chave
   // ----------------------------------------------------------------
   useEffect(() => {
     const verificarSessao = async () => {
@@ -28,8 +60,9 @@ export function AuthProvider({ children }) {
       try {
         const { data } = await api.get('/usuarios/perfil');
         setUsuario(data);
+        // Garante chave pública sincronizada a cada carregamento da sessão
+        await garantirChavePublica(data, setUsuario);
       } catch {
-        // Token inválido — limpa tudo
         localStorage.removeItem('ghosttalk_access_token');
         localStorage.removeItem('ghosttalk_refresh_token');
       } finally {
@@ -49,7 +82,7 @@ export function AuthProvider({ children }) {
 
     const { data } = await api.post('/auth/cadastro', {
       ...dados,
-      chavePublica, // Envia APENAS a chave pública ao servidor
+      chavePublica,
     });
 
     localStorage.setItem('ghosttalk_access_token', data.accessToken);
@@ -66,26 +99,14 @@ export function AuthProvider({ children }) {
   const login = useCallback(async (credenciais) => {
     const { data } = await api.post('/auth/login', credenciais);
 
-    // Se requer 2FA, retorna flag sem logar
     if (data.requer2FA) return data;
 
     localStorage.setItem('ghosttalk_access_token', data.accessToken);
     localStorage.setItem('ghosttalk_refresh_token', data.refreshToken);
     setUsuario(data.usuario);
 
-    // Garante que o par de chaves está gerado no dispositivo
-    const chavesExistentes = obterParDeChaves();
-    if (!chavesExistentes) {
-      const { chavePublica } = gerarParDeChaves();
-      // Atualiza a chave pública no servidor (novo dispositivo ou primeiro login)
-      await api.patch('/usuarios/perfil', { chavePublica });
-      // Atualiza o usuário local com a nova chave pública
-      setUsuario((u) => ({ ...u, chavePublica }));
-    } else if (!data.usuario.chavePublica) {
-      // Usuário existe mas não tem chave pública no servidor — sincroniza
-      await api.patch('/usuarios/perfil', { chavePublica: chavesExistentes.chavePublica });
-      setUsuario((u) => ({ ...u, chavePublica: chavesExistentes.chavePublica }));
-    }
+    // Garante chave pública após login
+    await garantirChavePublica(data.usuario, setUsuario);
 
     return data;
   }, []);
@@ -100,7 +121,6 @@ export function AuthProvider({ children }) {
     } catch {
       // Ignora erro — faz logout local de qualquer forma
     }
-
     localStorage.removeItem('ghosttalk_access_token');
     localStorage.removeItem('ghosttalk_refresh_token');
     setUsuario(null);
@@ -141,9 +161,6 @@ export function AuthProvider({ children }) {
   return <AuthContext.Provider value={valor}>{children}</AuthContext.Provider>;
 }
 
-/**
- * Hook para acessar o contexto de autenticação.
- */
 export function useAuth() {
   const contexto = useContext(AuthContext);
   if (!contexto) {

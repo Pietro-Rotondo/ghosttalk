@@ -5,7 +5,7 @@
  */
 
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { ArrowLeft, MoreVertical, Lock, Download, Trash2, ShieldCheck } from 'lucide-react';
+import { ArrowLeft, MoreVertical, Lock, Download, ShieldCheck, Trash2, UserCircle } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { useChat } from '../context/ChatContext';
 import { useSocket } from '../hooks/useSocket';
@@ -15,13 +15,15 @@ import Avatar from './Avatar';
 import IndicadorDigitando from './IndicadorDigitando';
 import ModalExportacao from './ModalExportacao';
 import ModalFingerprint from './ModalFingerprint';
+import ModalPerfil from './ModalPerfil';
 import { criptografarMensagem } from '../utils/criptografia';
 import { formatarTempoRelativo } from '../utils/formatacao';
+import api from '../utils/api';
 import toast from 'react-hot-toast';
 
 export default function AreaChat({ conversa, onVoltar }) {
   const { usuario } = useAuth();
-  const { mensagensPorConversa, carregarMensagens, digitandoPor } = useChat();
+  const { mensagensPorConversa, carregarMensagens, digitandoPor, setConversas } = useChat();
   const { enviarMensagem, emitirDigitando, marcarComoLidas } = useSocket();
 
   const mensagens = mensagensPorConversa[conversa._id] || [];
@@ -33,10 +35,32 @@ export default function AreaChat({ conversa, onVoltar }) {
   const [modalExportacao, setModalExportacao] = useState(false);
   const [modalFingerprint, setModalFingerprint] = useState(false);
   const [menuAberto, setMenuAberto] = useState(false);
+  const [perfilAberto, setPerfilAberto] = useState(false);
+  // Cache de chaves públicas buscadas on-demand
+  const [chavesPublicas, setChavesPublicas] = useState({});
 
   const containerRef = useRef(null);
   const ultimaMensagemRef = useRef(null);
   const primeiraCarregagem = useRef(true);
+
+  // ----------------------------------------------------------------
+  // Busca chave pública de um usuário se não estiver no objeto local
+  // ----------------------------------------------------------------
+  const obterChavePublica = useCallback(async (usuarioId, chaveJaConhecida) => {
+    if (chaveJaConhecida) return chaveJaConhecida;
+    if (chavesPublicas[usuarioId]) return chavesPublicas[usuarioId];
+
+    try {
+      const { data } = await api.get(`/usuarios/id/${usuarioId}`);
+      if (data.chavePublica) {
+        setChavesPublicas((prev) => ({ ...prev, [usuarioId]: data.chavePublica }));
+        return data.chavePublica;
+      }
+    } catch (e) {
+      console.error('[GhostTalk] Erro ao buscar chave pública:', e.message);
+    }
+    return null;
+  }, [chavesPublicas]);
 
   // ----------------------------------------------------------------
   // Carrega mensagens ao entrar na conversa
@@ -45,13 +69,12 @@ export default function AreaChat({ conversa, onVoltar }) {
     setPagina(1);
     setTemMais(true);
     primeiraCarregagem.current = true;
+    setChavesPublicas({});
 
     const carregar = async () => {
       setCarregando(true);
       const paginacao = await carregarMensagens(conversa._id, 1);
-      if (paginacao) {
-        setTemMais(paginacao.pagina < paginacao.totalPaginas);
-      }
+      if (paginacao) setTemMais(paginacao.pagina < paginacao.totalPaginas);
       setCarregando(false);
     };
 
@@ -76,54 +99,57 @@ export default function AreaChat({ conversa, onVoltar }) {
   // ----------------------------------------------------------------
   const carregarMaisAnteriores = useCallback(async () => {
     if (carregando || !temMais) return;
-
     const novaPagina = pagina + 1;
     setCarregando(true);
-
-    // Salva a posição de scroll antes de adicionar mensagens
     const container = containerRef.current;
     const alturaAntes = container?.scrollHeight || 0;
-
     const paginacao = await carregarMensagens(conversa._id, novaPagina);
-
     if (paginacao) {
       setPagina(novaPagina);
       setTemMais(novaPagina < paginacao.totalPaginas);
     }
-
     setCarregando(false);
-
-    // Restaura a posição de scroll
-    if (container) {
-      container.scrollTop = container.scrollHeight - alturaAntes;
-    }
+    if (container) container.scrollTop = container.scrollHeight - alturaAntes;
   }, [carregando, temMais, pagina, conversa._id, carregarMensagens]);
 
-  // Detecta scroll no topo para carregar mais mensagens
   const handleScroll = useCallback(() => {
     const container = containerRef.current;
     if (!container) return;
-    if (container.scrollTop < 100 && !carregando && temMais) {
-      carregarMaisAnteriores();
-    }
+    if (container.scrollTop < 100 && !carregando && temMais) carregarMaisAnteriores();
   }, [carregarMaisAnteriores, carregando, temMais]);
 
   // ----------------------------------------------------------------
-  // Envio de mensagem
+  // Envio de mensagem (individual e grupo)
   // ----------------------------------------------------------------
-  const handleEnviar = useCallback(async (texto, tipo = 'texto') => {
-    // Obtém a chave pública do destinatário (ou da conversa)
-    const destinatario = obterDestinatario(conversa, usuario);
-    const chavePublicaDestinatario = destinatario?.chavePublica;
+  const handleEnviar = useCallback(async (texto, tipo = 'texto', metadadosArquivo = null) => {
+    // Para grupos: criptografa com a própria chave pública do remetente
+    // (simplificação: servidor retransmite para todos; cada um pode ler)
+    // Para individuais: criptografa com a chave pública do destinatário
+    let chaveAlvo;
 
-    if (!chavePublicaDestinatario) {
-      toast.error('Não foi possível criptografar a mensagem: chave pública do destinatário não encontrada');
+    if (conversa.tipo === 'grupo') {
+      // Em grupo usa a chave pública do próprio remetente como envelope
+      // (modelo simplificado — para E2EE real em grupo seria necessário
+      // criptografar separadamente para cada membro)
+      chaveAlvo = usuario?.chavePublica;
+    } else {
+      const destinatario = obterDestinatario(conversa, usuario);
+      const idDestinatario = destinatario?._id || destinatario?.id;
+      chaveAlvo = await obterChavePublica(idDestinatario, destinatario?.chavePublica);
+    }
+
+    if (!chaveAlvo) {
+      toast.error(
+        conversa.tipo === 'grupo'
+          ? 'Sua chave de criptografia não foi encontrada. Faça logout e login novamente.'
+          : 'O destinatário ainda não tem chave de criptografia. Peça para ele fazer login novamente.'
+      );
       return;
     }
 
     let cifrado;
     try {
-      cifrado = criptografarMensagem(texto, chavePublicaDestinatario);
+      cifrado = criptografarMensagem(texto, chaveAlvo);
     } catch (erro) {
       toast.error('Erro de criptografia: ' + erro.message);
       return;
@@ -135,26 +161,39 @@ export default function AreaChat({ conversa, onVoltar }) {
         conteudoCriptografado: cifrado.conteudoCriptografado,
         nonce: cifrado.nonce,
         tipo,
+        metadadosArquivo: metadadosArquivo || undefined,
         tempId: `temp-${Date.now()}`,
       });
       emitirDigitando(conversa._id, false);
-    } catch (erro) {
+    } catch {
       toast.error('Erro ao enviar mensagem');
     }
-  }, [conversa, usuario, enviarMensagem, emitirDigitando]);
+  }, [conversa, usuario, enviarMensagem, emitirDigitando, obterChavePublica]);
 
   // ----------------------------------------------------------------
-  // Renderização
+  // Apagar conversa inteira
   // ----------------------------------------------------------------
+  const handleApagarConversa = async () => {
+    if (!window.confirm('Apagar toda esta conversa? Esta ação não pode ser desfeita.')) return;
+    try {
+      await api.delete(`/grupos/conversa/${conversa._id}`);
+      setConversas((prev) => prev.filter((c) => c._id !== conversa._id));
+      onVoltar?.();
+      toast.success('Conversa apagada');
+    } catch {
+      toast.error('Erro ao apagar conversa');
+    }
+    setMenuAberto(false);
+  };
+
   const nomeConversa = obterNomeConversa(conversa, usuario);
   const fotoConversa = obterFotoConversa(conversa, usuario);
   const outroParticipante = obterDestinatario(conversa, usuario);
 
   return (
     <div className="flex flex-col h-full">
-      {/* Cabeçalho do chat */}
+      {/* Cabeçalho */}
       <header className="flex items-center gap-3 px-4 py-3 border-b border-escuro-700 bg-escuro-900 flex-shrink-0">
-        {/* Botão voltar (apenas mobile) */}
         <button
           onClick={onVoltar}
           className="md:hidden p-1.5 rounded-lg hover:bg-escuro-700 text-escuro-400 hover:text-white transition-colors"
@@ -162,9 +201,12 @@ export default function AreaChat({ conversa, onVoltar }) {
           <ArrowLeft className="w-5 h-5" />
         </button>
 
-        <Avatar nome={nomeConversa} foto={fotoConversa} tamanho="sm" />
+        {/* Clique no avatar abre perfil */}
+        <button onClick={() => setPerfilAberto(true)} className="flex-shrink-0">
+          <Avatar nome={nomeConversa} foto={fotoConversa} tamanho="sm" />
+        </button>
 
-        <div className="flex-1 min-w-0">
+        <div className="flex-1 min-w-0 cursor-pointer" onClick={() => setPerfilAberto(true)}>
           <div className="flex items-center gap-2">
             <h2 className="font-semibold text-white truncate">{nomeConversa}</h2>
             <Lock className="w-3 h-3 text-green-400 flex-shrink-0" title="Criptografado E2EE" />
@@ -190,22 +232,41 @@ export default function AreaChat({ conversa, onVoltar }) {
           </button>
 
           {menuAberto && (
-            <div className="absolute right-0 top-full mt-1 w-52 bg-escuro-700 rounded-xl border border-escuro-600 shadow-xl z-50 overflow-hidden">
-              <button
-                onClick={() => { setModalExportacao(true); setMenuAberto(false); }}
-                className="flex items-center gap-3 w-full px-4 py-3 text-sm text-escuro-200 hover:bg-escuro-600 transition-colors"
-              >
-                <Download className="w-4 h-4" />
-                Exportar histórico
-              </button>
-              <button
-                onClick={() => { setModalFingerprint(true); setMenuAberto(false); }}
-                className="flex items-center gap-3 w-full px-4 py-3 text-sm text-escuro-200 hover:bg-escuro-600 transition-colors"
-              >
-                <ShieldCheck className="w-4 h-4" />
-                Verificar fingerprint
-              </button>
-            </div>
+            <>
+              <div className="fixed inset-0 z-40" onClick={() => setMenuAberto(false)} />
+              <div className="absolute right-0 top-full mt-1 w-52 bg-escuro-700 rounded-xl border border-escuro-600 shadow-xl z-50 overflow-hidden">
+                <button
+                  onClick={() => { setPerfilAberto(true); setMenuAberto(false); }}
+                  className="flex items-center gap-3 w-full px-4 py-3 text-sm text-escuro-200 hover:bg-escuro-600 transition-colors"
+                >
+                  <UserCircle className="w-4 h-4" />
+                  Ver perfil
+                </button>
+                <button
+                  onClick={() => { setModalExportacao(true); setMenuAberto(false); }}
+                  className="flex items-center gap-3 w-full px-4 py-3 text-sm text-escuro-200 hover:bg-escuro-600 transition-colors"
+                >
+                  <Download className="w-4 h-4" />
+                  Exportar histórico
+                </button>
+                {conversa.tipo === 'individual' && (
+                  <button
+                    onClick={() => { setModalFingerprint(true); setMenuAberto(false); }}
+                    className="flex items-center gap-3 w-full px-4 py-3 text-sm text-escuro-200 hover:bg-escuro-600 transition-colors"
+                  >
+                    <ShieldCheck className="w-4 h-4" />
+                    Verificar fingerprint
+                  </button>
+                )}
+                <button
+                  onClick={handleApagarConversa}
+                  className="flex items-center gap-3 w-full px-4 py-3 text-sm text-red-400 hover:bg-escuro-600 transition-colors border-t border-escuro-600"
+                >
+                  <Trash2 className="w-4 h-4" />
+                  Apagar conversa
+                </button>
+              </div>
+            </>
           )}
         </div>
       </header>
@@ -216,14 +277,12 @@ export default function AreaChat({ conversa, onVoltar }) {
         onScroll={handleScroll}
         className="flex-1 overflow-y-auto px-4 py-4 space-y-1"
       >
-        {/* Indicador de carregamento de mensagens anteriores */}
         {carregando && pagina > 1 && (
           <div className="text-center py-4">
             <div className="inline-block w-5 h-5 border-2 border-fantasma-500 border-t-transparent rounded-full animate-spin" />
           </div>
         )}
 
-        {/* Badge de criptografia */}
         <div className="flex justify-center mb-4">
           <div className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-escuro-700/50 border border-escuro-600">
             <Lock className="w-3 h-3 text-green-400" />
@@ -233,7 +292,6 @@ export default function AreaChat({ conversa, onVoltar }) {
           </div>
         </div>
 
-        {/* Mensagens */}
         {mensagens.map((mensagem, indice) => (
           <BolhaMensagem
             key={mensagem._id || mensagem.tempId || indice}
@@ -242,15 +300,11 @@ export default function AreaChat({ conversa, onVoltar }) {
               (mensagem.remetenteId?._id || mensagem.remetenteId) === (usuario?._id || usuario?.id)
             }
             mostrarAutor={conversa.tipo === 'grupo'}
+            conversaId={conversa._id}
           />
         ))}
 
-        {/* Indicador de digitação */}
-        {digitando.length > 0 && (
-          <IndicadorDigitando usuarios={digitando} />
-        )}
-
-        {/* Âncora para scroll automático */}
+        {digitando.length > 0 && <IndicadorDigitando usuarios={digitando} />}
         <div ref={ultimaMensagemRef} />
       </div>
 
@@ -263,16 +317,16 @@ export default function AreaChat({ conversa, onVoltar }) {
 
       {/* Modais */}
       {modalExportacao && (
-        <ModalExportacao
-          conversa={conversa}
-          mensagens={mensagens}
-          onFechar={() => setModalExportacao(false)}
-        />
+        <ModalExportacao conversa={conversa} mensagens={mensagens} onFechar={() => setModalExportacao(false)} />
       )}
       {modalFingerprint && (
-        <ModalFingerprint
+        <ModalFingerprint conversa={conversa} onFechar={() => setModalFingerprint(false)} />
+      )}
+      {perfilAberto && (
+        <ModalPerfil
           conversa={conversa}
-          onFechar={() => setModalFingerprint(false)}
+          usuario={usuario}
+          onFechar={() => setPerfilAberto(false)}
         />
       )}
     </div>
@@ -295,12 +349,10 @@ function obterFotoConversa(conversa, usuario) {
 
 function obterDestinatario(conversa, usuario) {
   if (!usuario || conversa.tipo === 'grupo') return null;
-  const outro = conversa.participantes?.find(
-    (p) => {
-      const id = p.usuarioId?._id || p.usuarioId?.id || p.usuarioId;
-      const meuId = usuario._id || usuario.id;
-      return id !== meuId && id?.toString() !== meuId?.toString();
-    }
-  );
+  const outro = conversa.participantes?.find((p) => {
+    const id = p.usuarioId?._id || p.usuarioId?.id || p.usuarioId;
+    const meuId = usuario._id || usuario.id;
+    return id !== meuId && id?.toString() !== meuId?.toString();
+  });
   return outro?.usuarioId || null;
 }

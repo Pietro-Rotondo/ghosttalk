@@ -29,8 +29,18 @@ const TIPOS_PERMITIDOS = [
   'image/png',
   'image/gif',
   'image/webp',
+  'video/mp4',
+  'video/webm',
+  'video/ogg',
+  'audio/mpeg',
+  'audio/ogg',
+  'audio/wav',
+  'audio/webm',
   'application/pdf',
   'text/plain',
+  'application/zip',
+  'application/msword',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
 ];
 
 // Configuração do Multer — armazenamento em disco
