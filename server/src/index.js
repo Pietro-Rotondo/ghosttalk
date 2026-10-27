@@ -23,6 +23,13 @@ inicializarSocket(servidor);
 // Conecta ao banco de dados e inicia o servidor
 async function iniciar() {
   try {
+    // Loga as variáveis de ambiente críticas (sem expor valores sensíveis)
+    console.log('[GhostTalk] Iniciando...');
+    console.log('[GhostTalk] NODE_ENV:', process.env.NODE_ENV);
+    console.log('[GhostTalk] PORT:', process.env.PORT);
+    console.log('[GhostTalk] MONGODB_URI definida:', !!process.env.MONGODB_URI);
+    console.log('[GhostTalk] JWT_SECRET definida:', !!process.env.JWT_SECRET);
+
     await conectarBancoDeDados();
     logger.info('Conectado ao banco de dados com sucesso');
 
@@ -36,6 +43,8 @@ async function iniciar() {
     // Inicia a limpeza periódica de mensagens com auto-destruição
     iniciarLimpezaMensagensExpiradas();
   } catch (erro) {
+    console.error('[GhostTalk] ERRO AO INICIAR:', erro.message);
+    console.error('[GhostTalk] Stack:', erro.stack);
     logger.error('Falha ao iniciar o servidor:', erro.message);
     process.exit(1);
   }
