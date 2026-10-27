@@ -141,7 +141,8 @@ function inicializarSocket(servidor) {
         });
 
         await mensagem.save();
-        await mensagem.populate('remetenteId', 'nomeUsuario nomeExibicao fotoPerfil');
+        // chavePublica necessária para descriptografar no cliente (E2EE)
+        await mensagem.populate('remetenteId', 'nomeUsuario nomeExibicao fotoPerfil chavePublica');
 
         // Atualiza última mensagem da conversa
         await Conversa.findByIdAndUpdate(conversaId, {

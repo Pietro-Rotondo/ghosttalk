@@ -4,11 +4,32 @@
  * Integra com o hook useSocket para eventos em tempo real.
  */
 
-import { createContext, useContext, useState, useCallback, useReducer } from 'react';
+import { createContext, useContext, useState, useCallback, useReducer, useRef } from 'react';
 import api from '../utils/api';
 import { descriptografarMensagem } from '../utils/criptografia';
 
 const ChatContext = createContext(null);
+
+/**
+ * Descriptografa uma mensagem tentando as chaves públicas candidatas.
+ * - Mensagem recebida: abre com a chave pública do remetente.
+ * - Mensagem enviada por mim (1-a-1): foi cifrada para o destinatário,
+ *   então abre com a chave pública do outro participante.
+ */
+function descriptografarComFallback(msg, conversa) {
+  if (msg.apagada) return null;
+
+  const candidatas = [
+    msg.remetenteId?.chavePublica,
+    ...(conversa?.participantes || []).map((p) => p.usuarioId?.chavePublica),
+  ].filter(Boolean);
+
+  for (const chave of new Set(candidatas)) {
+    const texto = descriptografarMensagem(msg.conteudoCriptografado, msg.nonce, chave);
+    if (texto !== null) return texto;
+  }
+  return null;
+}
 
 // ----------------------------------------------------------------
 // Reducer para gerenciamento de mensagens por conversa
@@ -58,6 +79,8 @@ function mensagensReducer(estado, acao) {
 
 export function ChatProvider({ children }) {
   const [conversas, setConversas] = useState([]);
+  const conversasRef = useRef(conversas);
+  conversasRef.current = conversas;
   // Expõe setConversas para que AreaChat possa remover conversa localmente
   const [conversaAtiva, setConversaAtiva] = useState(null);
   const [carregandoConversas, setCarregandoConversas] = useState(false);
@@ -89,20 +112,11 @@ export function ChatProvider({ children }) {
       });
 
       // Descriptografa cada mensagem localmente
-      const mensagensDescriptografadas = data.mensagens.map((msg) => {
-        const chavePublicaRemetente = msg.remetenteId?.chavePublica;
-        let textoDescriptografado = null;
-
-        if (chavePublicaRemetente && !msg.apagada) {
-          textoDescriptografado = descriptografarMensagem(
-            msg.conteudoCriptografado,
-            msg.nonce,
-            chavePublicaRemetente
-          );
-        }
-
-        return { ...msg, textoDescriptografado };
-      });
+      const conversa = conversasRef.current.find((c) => c._id === conversaId);
+      const mensagensDescriptografadas = data.mensagens.map((msg) => ({
+        ...msg,
+        textoDescriptografado: descriptografarComFallback(msg, conversa),
+      }));
 
       if (pagina === 1) {
         despacharMensagens({
@@ -129,16 +143,8 @@ export function ChatProvider({ children }) {
   // Adiciona nova mensagem recebida via Socket.IO
   // ----------------------------------------------------------------
   const adicionarMensagem = useCallback((mensagem) => {
-    const chavePublicaRemetente = mensagem.remetenteId?.chavePublica;
-    let textoDescriptografado = null;
-
-    if (chavePublicaRemetente && !mensagem.apagada) {
-      textoDescriptografado = descriptografarMensagem(
-        mensagem.conteudoCriptografado,
-        mensagem.nonce,
-        chavePublicaRemetente
-      );
-    }
+    const conversa = conversasRef.current.find((c) => c._id === mensagem.conversaId);
+    const textoDescriptografado = descriptografarComFallback(mensagem, conversa);
 
     despacharMensagens({
       tipo: 'ADICIONAR_MENSAGEM',

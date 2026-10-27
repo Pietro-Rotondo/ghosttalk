@@ -60,7 +60,7 @@ async function enviarMensagem(req, res) {
       $set: { ultimaMensagem: novaMensagem._id },
     });
 
-    res.status(201).json({ mensagem: await novaMensagem.populate('remetenteId', 'nomeUsuario nomeExibicao fotoPerfil') });
+    res.status(201).json({ mensagem: await novaMensagem.populate('remetenteId', 'nomeUsuario nomeExibicao fotoPerfil chavePublica') });
   } catch (erro) {
     logger.error('Erro ao enviar mensagem:', erro.message);
     res.status(500).json({ erro: 'Erro ao enviar mensagem' });
@@ -94,7 +94,8 @@ async function buscarMensagens(req, res) {
       .sort({ createdAt: -1 })
       .skip(skip)
       .limit(limite)
-      .populate('remetenteId', 'nomeUsuario nomeExibicao fotoPerfil')
+      // chavePublica necessária para descriptografar no cliente (E2EE)
+      .populate('remetenteId', 'nomeUsuario nomeExibicao fotoPerfil chavePublica')
       .populate('respostaParaMensagemId', 'conteudoCriptografado nonce tipo remetenteId');
 
     const total = await Mensagem.countDocuments({ conversaId, apagada: false });
